@@ -1,0 +1,11 @@
+flowchart LR
+    host["boot<br/>准备公共服务"]
+    compose["prepareProfilePatches<br/>合成配置、检查兼容性"]
+    include["根 Include<br/>为配置项创建 Entry"]
+    entry["Entry._init<br/>导入模块，创建 Fiber"]
+    fiber["Fiber<br/>依赖就绪后执行插件"]
+    host --> compose --> include --> entry --> fiber
+    classDef setup fill:#edf4ff,stroke:#5274a4,color:#16324f,stroke-width:1.5px;
+    classDef execute fill:#eaf7ef,stroke:#4f8b67,color:#204c33,stroke-width:1.5px;
+    class host,compose,include setup;
+    class entry,fiber execute;

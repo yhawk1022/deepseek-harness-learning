@@ -1,0 +1,29 @@
+flowchart TB
+    subgraph hostTree["主配置树（节选）"]
+        direction TB
+        include["根 Include"]
+        model["agent-default-model"]
+        declaration["preset-standard"]
+        registry["agent-preset-registry"]
+        include --> model
+        include --> declaration
+        include --> registry
+        declaration -. "register：提交预设" .-> registry
+    end
+    subgraph presetTree["standard 预设的配置树（节选）"]
+        direction TB
+        root["预设配置根"]
+        group["compaction · Group"]
+        engine["compaction-basic"]
+        command["command-compact"]
+        pruner["tool-result-pruner"]
+        root --> group
+        group --> engine
+        group --> command
+        group --> pruner
+    end
+    registry -. "mountPreset" .-> presetTree
+    classDef setup fill:#edf4ff,stroke:#5274a4,color:#16324f,stroke-width:1.5px;
+    classDef preset fill:#eaf7ef,stroke:#4f8b67,color:#204c33,stroke-width:1.5px;
+    class include,model,declaration,registry setup;
+    class root,group,engine,command,pruner preset;
