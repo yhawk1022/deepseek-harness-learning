@@ -177,19 +177,14 @@ export function initializeProfileFromDefault(
 }
 
 /**
- * Load a resolved profile for `name` and (re)write the empty root config. The
- * root is always rewritten: the whole composition is patch layers, and the
- * vendored Loader's tree write-back (a plugin self-disposing persists the
- * current tree) can bake composed rows into this file — which would duplicate
- * every bundle insert on the next boot. The file exists on disk only because
- * the Loader needs a real include root to anchor `baseUrl` at the profile
- * directory (the config dump anchors on the same file, so both compose over
- * the identical base).
- * @param name - the profile name.
- * @param userLayer - `false` skips parsing `cordis.patch.yml` (the default dump).
- * @param fromDefaultProfile - shipped template that replaces the profile before loading it.
- * @returns the loaded profile.
- * @throws when explicit initialization names an unknown template or a shipped target.
+ * 读取 profile，并将根配置 cordis.yml 重置为 []，让本次启动从空配置应用补丁。
+ * Loader 可能把运行中的配置回写到根文件；保留上次结果会让下次启动的 insert 重复添加插件。
+ * 仍需保留这个空文件，让 Include 以 profile 目录为基准解析相对路径；配置导出也使用相同基准。
+ * @param name - profile 名称。
+ * @param userLayer - 为 false 时跳过 cordis.patch.yml，用于只导出默认配置。
+ * @param fromDefaultProfile - 提供时先用指定内置模板重建 profile。
+ * @returns 已读取的 profile。
+ * @throws 模板不存在，或试图用模板重建内置 profile 时抛出错误。
  */
 export function prepareProfile(name: string, userLayer = true, fromDefaultProfile?: string): Profile {
   if (fromDefaultProfile !== undefined) initializeProfileFromDefault(name, fromDefaultProfile)
@@ -199,7 +194,7 @@ export function prepareProfile(name: string, userLayer = true, fromDefaultProfil
   return profile
 }
 
-/** One profile's patch layers, in application order. */
+/** 加载插件前准备好的配置数据和模块位置。 */
 interface ComposedProfile {
   profile: Profile
   /** Immutable runtime resolution computed before any plugin imports. */
@@ -209,17 +204,13 @@ interface ComposedProfile {
 }
 
 /**
- * Load `name` and compose its effective patch stack: bundle layers in
- * `dsh.profile.bundles` order (a base-backed profile gets the base bundle's
- * platform-gated shell rows), the profile's user layer, the home-level user
- * layer (`$DSH_HOME/cordis.patch.yml` — machine-local preferences that apply
- * to every profile, so it outranks the per-profile layer), `--patch` overlays,
- * then the telemetry switch.
- * @param name - the profile name.
- * @param patchFiles - `--patch` overlay paths, in argv order.
- * @param fromDefaultProfile - shipped template that replaces the named profile.
- * @param resolvedProfile - application-owned profile and installation.
- * @returns the profile and its patch layers.
+ * 收集本次启动的配置和模块位置，让后续插件使用同一组配置来源和依赖解析规则。
+ * 这里只准备数据；readProfilePatches 排列补丁，boot 应用补丁并加载插件。
+ * @param name - profile 名称。
+ * @param patchFiles - 按命令行顺序传入的 --patch 文件路径。
+ * @param fromDefaultProfile - 提供时先用内置模板替换指定 profile，否则加载已有 profile。
+ * @param resolvedProfile - 提供时使用应用已加载的 profile 和安装位置，跳过按名称初始化。
+ * @returns profile、模块解析表和已读取的命令行补丁；此时尚未挂载配置中的插件。
  */
 async function composeProfile(
   name: string,
@@ -262,55 +253,59 @@ export interface RunProfileOptions {
 }
 
 /**
- * Boot one profile invocation end to end and leave process lifetime to the
- * mounted plugins (or to a one-shot runner the composition mounts).
- * @param options - environment snapshot, profile name, overlays, and the booted app's own arguments.
- * @returns the settled root context and the shutdown controller.
- * @throws after disposing startup resources; cleanup failures retain the original error.
+ * 按指定 profile 启动应用：准备配置和公共服务，再交给 boot 加载插件并检查启动结果。
+ * 公共服务必须先于配置中的插件就绪，插件才能使用一致的环境、模块位置和退出入口。
+ * 返回只表示启动流程结束；服务器等插件可以继续维持进程，一次性任务也可能已在启动期间退出。
+ * @param options - 启动环境快照、profile 名称、配置覆盖层及应用自身的参数。
+ * @returns 启动流程结束后的根上下文和进程关闭控制器；上下文可能已在启动期间被释放。
+ * @throws 启动失败时先清理已创建的资源；清理也失败时，将两个错误一并保留。
  */
 export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Context; shutdown: ProcessShutdown }> {
-  // Before the first plugin mounts and before anything can issue a request: Node's fetch ignores the
-  // proxy environment on its own, so every profile would otherwise connect directly. Resolving from
-  // the launcher's snapshot — not `process.env` — is what lets a proxy declared in a `.env` layer
-  // work, which the NODE_USE_ENV_PROXY flag cannot do because Node samples the environment at start.
+  // 插件在启动时就可能请求网络，因此先让代理生效。
+  // .env 在 Node 启动后才加载；使用这份环境快照，才能包含 NODE_USE_ENV_PROXY 启动时读不到的配置。
   const disposeProxy = await installProxyFromEnvironment(
     options.environment,
     (message) => { process.stderr.write(`${NAME}: ${message}\n`) },
   )
 
+  // 启动尚未完成也可能收到退出请求；提前保存上下文，才能清理已经启动的插件。
   const app: { current?: Context } = {}
   let disposal: Promise<void> | undefined
-  const dispose = (): Promise<void> => disposal ??= (async () => {
+  // 插件、信号和启动失败都可能请求清理；缓存 Promise，让这些调用等待同一次清理。
+  const dispose = (): Promise<void> => (disposal ??= (async () => {
     const failures: unknown[] = []
+    // 插件释放连接等资源时仍可能使用代理，因此最后才撤销代理；前一项失败也要继续清理。
     for (const release of [() => app.current?.fiber.dispose(), disposeProxy]) {
       try { await release() } catch (error) { failures.push(error) }
     }
     if (failures.length === 1) throw failures[0]
     if (failures.length > 1) throw new AggregateError(failures, 'dsh: profile cleanup failed')
-  })()
+  })())
   try {
+    // 一个 profile 的配置可能来自多个组合包和覆盖文件；先读齐这些输入，后面才能合成最终配置。
     const composed = await composeProfile(
       options.profile, options.patchFiles, options.fromDefaultProfile, options.resolvedProfile,
     )
     const appReady = createAppReady()
     const shutdown = createProcessShutdown(dispose)
+    // 收到关闭信号后，启动任务仍可能继续返回；记住这次中断，避免随后误发 ready。
     const signalShutdown = new AbortController()
     const interrupt = (code: number): void => {
       signalShutdown.abort()
       shutdown.interrupt(code)
     }
-    // Signals own teardown throughout the startup window, not only after boot()
-    // settles: an inserted provider can publish before sibling rows finish mounting.
-    // SIGTERM is a supervisor's ordinary stop request and exits 0 on every
-    // surface — the launcher does not know whether the app considered its work
-    // complete; SIGINT is a user interrupt and reports 130.
+    // 部分插件可能先启动服务器，其余插件还在加载；提前接管信号，才能在这段时间关闭已启动的资源。
+    // SIGTERM 按常规停止请求以 0 退出，不表示业务任务完成；SIGINT 按用户中断以 130 退出。
     process.on('SIGTERM', () => { interrupt(0) })
     process.on('SIGINT', () => { interrupt(130) })
+    // 未处理的致命错误会先输出诊断，再限时释放插件树，让终端等资源有机会恢复。
     installFailLoud(NAME, process, async () => {
       await app.current?.fiber.dispose()
     })
 
     const rootConfig = join(composed.profile.dir, PROFILE_ROOT_FILENAME)
+    // 插件后续重读配置或管理依赖时，需要知道本次使用的目录、覆盖层和包管理器。
+    // 应用自带的安装位置优先于 CLI 默认位置，避免从另一份安装中查找依赖。
     const profileContext: ProfileContext = {
       name: options.profile,
       ...(options.packageManager === undefined ? {} : { packageManager: options.packageManager }),
@@ -320,17 +315,18 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
       cwd: process.cwd(), home: resolveDshHome(),
       overlays: composed.overlays, telemetryDisabledEnv: process.env.DSH_TELEMETRY_DISABLED,
     }
+    // 配置中的插件一启动就可能读取环境、导入依赖或请求退出。
+    // boot 先执行这个准备回调，再加载配置中的插件，保证它们用到的公共服务已经存在。
     const ctx = await boot(NAME, rootConfig, readProfilePatches(NAME, profileContext, composed.profile), async (hostCtx) => {
       app.current = hostCtx
       hostCtx.provide('profileContext', profileContext)
-      // Before any config-tree entry mounts, so plugins resolve all launch-time
-      // environment values from the same immutable launch snapshot.
+      // 所有插件读取同一份启动环境，避免各自在不同时间从 process.env 取值。
       hostCtx.provide(DSH_LAUNCH_ENVIRONMENT_KEY, options.environment)
+      // 配置里的 name 可能是包名；先安装解析规则，才能找到这个 profile 实际使用的依赖版本。
       await hostCtx.plugin(PluginPackages, {
         resolution: composed.resolution,
       })
-      // The command line and bounded exit request are launcher facts available
-      // to every app plugin that injects the argument snapshot.
+      // 通过服务传递应用参数、统一的退出入口和就绪通知，让插件无需各自处理 argv 和进程退出。
       provideCmdline(hostCtx, {
         args: options.args,
         exit: code => void shutdown.shutdown(code),
@@ -338,6 +334,8 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
       })
     })
     app.current = ctx
+    // 一次性任务可能在启动期间就释放了插件树；收到信号后也可能刚好走到这里。
+    // 只向仍在运行的应用发布 ready，避免通知插件向已经关闭的应用继续提交工作。
     if (!signalShutdown.signal.aborted
       && ctx.fiber.state === FiberState.ACTIVE
       && ctx.get('loader') !== undefined) {
@@ -345,6 +343,7 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
     }
     return { ctx, shutdown }
   } catch (error) {
+    // 代理安装后的启动失败统一回收已获取的资源；清理错误不能覆盖最初的启动错误。
     try { await dispose() } catch (cleanupError) {
       throw new AggregateError([error, cleanupError], 'dsh: profile startup and cleanup failed')
     }

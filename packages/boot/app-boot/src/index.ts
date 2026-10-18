@@ -239,18 +239,23 @@ export function loadLayeredEnv(
   binName: string, cwd: string = process.cwd(),
   warn: (line: string) => void = line => void process.stderr.write(line),
 ): LaunchEnvironmentSnapshot {
+  // 在读取 .env 前确定 Harness home，避免文件中的变量影响加载目录。
   const home = resolveDshHome()
+  // 保留加载前的进程环境，避免将随后从文件补入的值误记为继承值。
   const inherited = { ...process.env } as Record<string, string>
-  // Parse both layers first: a rejection must not leave one file applied.
+  // 两层文件均先解析、校验，再写入 process.env；任一层被拒绝时，不会留下另一层的部分写入。
   const project = readEnvLayer(binName, cwd, warn, home)
+  // 调用目录就是 Harness home 时，同一文件只读取一次，并记在 project-env 层。
   const user = home === resolve(cwd) ? undefined : readEnvLayer(binName, home, warn, home)
-  // Apply the checked values without replacing a higher-ranked name.
+  // 只补充未定义的变量，使优先级保持为：继承的进程环境 > 项目 .env > Harness-home .env。
+  // 空字符串也是已定义的值，不能被较低优先级的配置覆盖。
   for (const layer of [project, user]) {
     if (layer === undefined) continue
     for (const [name, value] of Object.entries(layer.values)) {
       if (process.env[name] === undefined) process.env[name] = value
     }
   }
+  // 快照保留各层原始值及文件路径，以便识别最终值的来源；合并后的 process.env 已丢失这些信息。
   return createLaunchEnvironmentSnapshot([
     { source: 'process', values: inherited },
     ...project === undefined ? [] : [{ source: 'project-env' as const, path: project.path, values: project.values }],
