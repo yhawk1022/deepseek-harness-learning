@@ -1,0 +1,27 @@
+---
+config:
+  flowchart:
+    wrappingWidth: 460
+---
+flowchart TB
+    command["① 命令入口（第 1～5 节）<br/>pnpm run dsh web → apps/cli/src/bin.ts"]
+    parse["解析命令，读取启动环境<br/>runCli → parseDshArgs → loadLayeredEnv<br/>确定启动 web profile，固定环境快照"]
+    profile["② runProfile 准备配置（profile 小节、第 6 节）<br/>composeProfile / prepareProfile 读取 web profile<br/>根 cordis.yml 重置为 []"]
+    patches["按顺序收集补丁：readProfilePatches<br/>组合包 → profile → home → --patch"]
+    prepare["boot 建立容器，执行 prepare 回调<br/>先提供环境、包解析、参数与退出服务"]
+    compose["③ 合成配置，加载插件（第 6 节）<br/>prepareProfilePatches 合成并检查配置<br/>根 Include 为每项配置创建 Entry"]
+    activate["导入插件，依赖就绪后运行<br/>Entry 按 name 导入代码，创建 Fiber<br/>Fiber 用 config 启动插件"]
+    ready["Web 页面与 API 服务就绪<br/>boot 检查启动结果<br/>runProfile 确认应用仍在运行后发布 ready"]
+    task["用户打开页面并提交任务<br/>Agent 开始执行任务（本文不展开）"]
+
+    command --> parse --> profile --> patches --> prepare --> compose --> activate --> ready
+    ready -.-> task
+
+    classDef cliNode fill:#edf4ff,stroke:#5274a4,color:#16324f,stroke-width:1.5px;
+    classDef setupNode fill:#fff5df,stroke:#b58a38,color:#634718,stroke-width:1.5px;
+    classDef pluginNode fill:#eaf7ef,stroke:#4f8b67,color:#204c33,stroke-width:1.5px;
+    classDef later fill:#f4f5f7,stroke:#8b95a5,color:#465163,stroke-width:1.5px,stroke-dasharray:5 4;
+    class command,parse cliNode;
+    class profile,patches,prepare setupNode;
+    class compose,activate,ready pluginNode;
+    class task later;

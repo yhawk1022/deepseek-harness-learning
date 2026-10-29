@@ -1,0 +1,34 @@
+---
+config:
+  flowchart:
+    wrappingWidth: 280
+---
+flowchart TB
+    send["send()<br/>消息入队"]
+    wake["wakeDriver()<br/>phase 是 idle？"]
+    wait["返回，不启动新驱动器<br/>按条件暂存唤醒"]
+    kick["kick()：外层循环<br/>await turn()"]
+    turn["turn()：开启本轮<br/>turn/start"]
+    step["preStep() → step()<br/>领取输入、调用模型、执行工具"]
+    stepMore{"本轮还需下一步？"}
+    turnEnd["turn()：结束本轮<br/>turn/end"]
+    turnMore{"turn() 返回 true？"}
+    idle["kick()：finally 收尾<br/>恢复 idle，必要时补唤醒"]
+
+    send -->|wakeup = true| wake
+    wake -->|否| wait
+    wake -->|是：先设置 running| kick
+    kick --> turn --> step --> stepMore
+    stepMore -->|是：内层，下一步| step
+    stepMore -->|否| turnEnd --> turnMore
+    turnMore -->|是：外层，下一轮| kick
+    turnMore -->|否| idle
+
+    classDef startNode fill:#edf4ff,stroke:#5274a4,color:#16324f,stroke-width:1.5px;
+    classDef outerNode fill:#fff5df,stroke:#b58a38,color:#634718,stroke-width:1.5px;
+    classDef innerNode fill:#eaf7ef,stroke:#4f8b67,color:#204c33,stroke-width:1.5px;
+    classDef endNode fill:#f4f5f7,stroke:#8b95a5,color:#465163,stroke-width:1.5px;
+    class send,wake startNode;
+    class kick,turnMore outerNode;
+    class turn,step,stepMore,turnEnd innerNode;
+    class wait,idle endNode;

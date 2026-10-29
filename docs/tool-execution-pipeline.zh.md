@@ -9,50 +9,50 @@
 
 ```mermaid
 flowchart TD
-  model["Assistant message contains tool-call block"]
-  toolCall["Session event: <code>tool/call</code><br/>logged before execution"]
-  presentCall["UI pending card<br/>presentCall(args)"]
-  pre["<code>tools/pre-execute</code> waterfall<br/>hooks, permission, sandbox"]
-  guards["Registered monotonic guards<br/>deny or abstain; identity protected"]
-  denied["denied or approval refused<br/>tool body skipped"]
-  approval["<code>ctx.approval</code> one-shot prompt<br/>absent or unanswerable: deny"]
-  around["<code>tools/execute</code> waterfall<br/>timeout, retry, metrics (around dispatch)"]
-  toolBody["Registered tool execute() body"]
-  fsGate["<code>fs/write-intent</code> or <code>fs/edit-intent</code><br/>tool-fs mutations only"]
-  owned["Tool-owned session events<br/><code>todo/write</code>, <code>fs/observed</code>, <code>hook/invoked</code>, <code>hook/result</code>, <code>tool/ptc-dispatch</code>"]
-  project["ToolDefinition.projectContent<br/>execution-prepared text and images"]
-  post["<code>tools/post-execute</code> waterfall<br/>accept, block, replace, add context"]
-  normalized["Registry outer normalization<br/>pipeline/result snapshot throws become isError"]
-  finalize["ToolDefinition.finalizeContent<br/>last content-only invariant"]
-  final["<code>tools/result</code> synchronous notification<br/>frozen authoritative outcome"]
-  context["Active-batch additionalContexts FIFO<br/>injected user/message after recorded tool results"]
-  toolResult["Session event: <code>tool/result</code><br/>single model-facing outcome"]
-  allResults["Tool batch settled<br/>recorded tool/result events complete"]
-  presentResult["UI completed card<br/>presentResult(args, result)"]
+  model["助手消息包含 tool-call 块<br/>Assistant message contains tool-call block"]
+  toolCall["会话事件（Session event）： <code>tool/call</code><br/>执行前记录<br/>logged before execution"]
+  presentCall["UI 待处理卡片（UI pending card）<br/>presentCall(args)"]
+  pre["<code>tools/pre-execute</code> waterfall（瀑布式事件）<br/>钩子、权限、沙箱<br/>hooks, permission, sandbox"]
+  guards["已注册的单调守卫（Registered monotonic guards）<br/>只能拒绝或不表态；调用身份受保护<br/>deny or abstain; identity protected"]
+  denied["策略拒绝或审批被拒（denied or approval refused）<br/>跳过工具主体（tool body skipped）"]
+  approval["<code>ctx.approval</code> 单次审批询问（one-shot prompt）<br/>审批服务缺失或无法作答时拒绝<br/>absent or unanswerable: deny"]
+  around["<code>tools/execute</code> waterfall（瀑布式事件）<br/>超时、重试、指标（环绕分发）<br/>timeout, retry, metrics (around dispatch)"]
+  toolBody["已注册工具的 execute() 主体<br/>Registered tool execute() body"]
+  fsGate["<code>fs/write-intent</code> 或（or）<code>fs/edit-intent</code><br/>仅限 tool-fs 变更（tool-fs mutations only）"]
+  owned["工具负责的会话事件（Tool-owned session events）<br/><code>todo/write</code>, <code>fs/observed</code>, <code>hook/invoked</code>, <code>hook/result</code>, <code>tool/ptc-dispatch</code>"]
+  project["ToolDefinition.projectContent<br/>执行阶段准备的文本和图片<br/>execution-prepared text and images"]
+  post["<code>tools/post-execute</code> waterfall（瀑布式事件）<br/>接纳、阻止、替换、补充上下文<br/>accept, block, replace, add context"]
+  normalized["注册表外层规范化（Registry outer normalization）<br/>流水线或结果快照抛出异常时，转换为 isError<br/>pipeline/result snapshot throws become isError"]
+  finalize["ToolDefinition.finalizeContent<br/>最后强制执行的仅限内容不变式<br/>last content-only invariant"]
+  final["<code>tools/result</code> 同步通知（synchronous notification）<br/>冻结后的最终结果<br/>frozen authoritative outcome"]
+  context["当前批次的 additionalContexts 按先进先出处理<br/>Active-batch additionalContexts FIFO<br/>工具结果全部记录后，注入 user/message<br/>injected user/message after recorded tool results"]
+  toolResult["会话事件（Session event）： <code>tool/result</code><br/>交给模型的单一结果<br/>single model-facing outcome"]
+  allResults["工具批次已结算（Tool batch settled）<br/>tool/result 事件已全部记录<br/>recorded tool/result events complete"]
+  presentResult["UI 已完成卡片（UI completed card）<br/>presentResult(args, result)"]
   model --> toolCall
   toolCall --> presentCall
   toolCall --> pre
-  pre -->|allow| guards
-  guards -->|allow| around
-  guards -->|deny| denied
-  guards -.->|throw| normalized
+  pre -->|允许（allow）| guards
+  guards -->|允许（allow）| around
+  guards -->|拒绝（deny）| denied
+  guards -.->|抛出异常（throw）| normalized
   around --> toolBody
-  pre -->|deny| denied
-  pre -->|ask| approval
-  approval -->|allowed-once| guards
-  approval -->|rejected, cancelled, unavailable| denied
-  approval -.->|throw| normalized
+  pre -->|拒绝（deny）| denied
+  pre -->|询问（ask）| approval
+  approval -->|单次允许（allowed-once）| guards
+  approval -->|拒绝、取消或不可用（rejected, cancelled, unavailable）| denied
+  approval -.->|抛出异常（throw）| normalized
   denied --> project
-  pre -.->|throw| normalized
+  pre -.->|抛出异常（throw）| normalized
   toolBody --> fsGate
   fsGate --> toolBody
   toolBody --> owned
   toolBody --> around
   around --> project
   project --> post
-  project -.->|throw| normalized
-  around -.->|wrapper throws| normalized
-  post -.->|throw| normalized
+  project -.->|抛出异常（throw）| normalized
+  around -.->|包装器抛出异常（wrapper throws）| normalized
+  post -.->|抛出异常（throw）| normalized
   post --> finalize
   normalized --> finalize
   finalize --> final

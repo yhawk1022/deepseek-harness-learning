@@ -1,10 +1,28 @@
 # 源码精读1：启动过程
 
-本文从 `pnpm run dsh web` 开始，说明命令如何进入 `runProfile`，以及配置如何变成运行中的插件。
+本文从 `pnpm run dsh web` 开始，研究一个 AI 应用怎样把部署选择变成运行中的组件：谁确定配置，谁提供公共环境，谁管理组件的启动与退出。读完应能为自己的应用划分这些职责。
 
-先记住一个区别：**配置只描述要启动什么；插件代码决定启动后做什么。** `runProfile` 负责准备配置和公共服务，再调用 `boot` 完成加载。
+本章围绕三个设计问题展开：
 
-## 先找到本机的 profile 文件
+- 同一套 Agent 能力用于不同应用入口时，哪些差异由配置表达，哪些属于业务代码？
+- 配置来自多个组合包和覆盖文件时，怎样确定最终生效值？
+- 组件存在依赖且可能启动失败时，谁负责激活与清理？
+
+**配置描述本次应用装配什么；插件实现具体能力。** `runProfile` 准备配置和公共服务，再调用 `boot` 完成加载。插件内部的扩展与作用域机制留到[第 3 篇](dsh-source-reading-outline-20261029.md)讨论，本篇先明确启动层的职责。
+
+## 启动过程总览：从命令到 Web 可用
+
+沿箭头从上往下读：**① 解析命令 → ② 准备配置和容器 → ③ 加载插件**。每一步都保留对应函数名，方便对照源码。
+
+<img src="figures/dsh-startup-overview-vertical.png" alt="DSH Web 启动过程：解析命令、准备配置、加载插件，最后等待用户提交任务" width="420">
+
+[查看流程图的 Mermaid 源码](figures/dsh-startup-overview.mmd)
+
+这里的箭头表示启动阶段的先后关系；具体插件按服务依赖激活，同级插件可以并发加载。**应用就绪、Agent 已创建、业务任务完成，需要分别判断。** [声明式 Agent](../packages/core/agent-loop/src/index.ts#L392) 可以随插件启动创建；任务怎样执行，由下一篇的 Agent 循环解释。
+
+先确认 profile 与配置职责，再读配置合成和插件加载。命令解析的细节放在第 2 节的折叠区，便于按需对照源码；第 4 节整理可用于自己应用的设计产出。
+
+## 1. 先确定本次应用使用的配置
 
 **profile 是一套有名字的应用启动配置。** 它决定启动哪些插件、给插件传什么参数，以及怎样组织这些插件。执行 `pnpm run dsh web`，就是让 dsh 按名为 `web` 的 profile 启动应用。
 
@@ -15,7 +33,10 @@
 未设置 DSH_HOME：~/.dsh/profiles/<profile 名称>/
 ```
 
-本机核对时（2026-10-16），`DSH_HOME` 未设置，因此实际目录是：
+<details>
+<summary>本机示例：2026-10-16 核对的 profile 目录</summary>
+
+当时 `DSH_HOME` 未设置，因此实际目录是：
 
 ```text
 /Users/pangyan/.dsh/profiles/
@@ -31,6 +52,8 @@
 
 本机可打开 `/Users/pangyan/.dsh/profiles/web`，查看 `/Users/pangyan/.dsh/profiles/web/package.json` 和 `/Users/pangyan/.dsh/profiles/web/cordis.patch.yml`。
 
+</details>
+
 以启动 `web` 为例，本地文件的用途是：
 
 | 文件 | 加载时用它做什么 |
@@ -39,11 +62,18 @@
 | `web/cordis.patch.yml` | 读取这个 profile 自己的修改，在组合包默认配置上增加、修改或禁用插件。 |
 | `web/cordis.yml` | 启动器每次将它重置为 `[]`，作为配置加载的根文件；最终插件配置由补丁生成。 |
 
-因此，本次启动读取的 profile 位于 `/Users/pangyan/.dsh/profiles/web/`。目录名 `web` 来自命令参数；`/Users/pangyan/.dsh` 来自 home 目录解析规则。源码中的 `resolveDshHome()` 确定后者，`resolveProfileDir('web')` 再拼出完整 profile 路径。
+目录名 `web` 来自命令参数，父目录来自 home 目录解析规则。源码中的 `resolveDshHome()` 确定后者，`resolveProfileDir('web')` 再拼出完整 profile 路径。应用名称与部署位置由启动参数和环境确定，业务插件通过准备好的上下文使用它们。
 
-第 6 节直接使用本机 `web` profile 及其组合包中的真实配置，说明这些文件如何变成插件树。
+第 3 节使用本机示例及其组合包中的配置，说明这些输入如何变成插件树。
 
-## 1. 从 pnpm 命令进入 runCli
+## 2. 命令怎样抵达启动入口
+
+这条调用链负责把启动意图交给 `runProfile`：`pnpm run dsh web` → `bin.ts` → `runCli()` → `parseDshArgs()` → `runProfile()`。其中的参数解析与 TypeScript 语法可以按需细读。
+
+<details>
+<summary>源码细读：命令入口、参数来源与操作分派</summary>
+
+### 2.1 从 pnpm 命令进入 runCli
 
 执行：
 
@@ -81,7 +111,7 @@ if (import.meta.main) {
 
 源码：`package.json` 的 `scripts.dsh`；`apps/cli/src/bin.ts` 的文件末尾。
 
-## 2. runCli 的 options 从哪里来
+### 2.2 runCli 的 options 从哪里来
 
 `runCli` 有一个默认参数：
 
@@ -118,7 +148,7 @@ export type RunCliOptions = Pick<RunProfileOptions, 'packageManager'> & {
 
 源码：`apps/cli/src/bin.ts` 的 `RunCliOptions`、`runCli`。
 
-## 3. 命令行参数解析：从 web 到启动指令
+### 2.3 命令行参数解析：从 web 到启动指令
 
 `process.argv` 的前两项是 Node 路径和入口文件路径。去掉它们后，本次待解析的内容是：
 
@@ -158,7 +188,7 @@ export type RunCliOptions = Pick<RunProfileOptions, 'packageManager'> & {
 
 源码：`apps/cli/src/args.ts` 的 `parseDshArgs`、`resolveBoot`。
 
-## 4. switch 如何选择操作分支
+### 2.4 switch 如何选择操作分支
 
 `runCli` 根据 `invocation.mode` 分派工作：
 
@@ -175,7 +205,7 @@ export type RunCliOptions = Pick<RunProfileOptions, 'packageManager'> & {
 
 源码：`apps/cli/src/bin.ts` 的 `switch (invocation.mode)`。
 
-## 5. profile 分支把什么交给 runProfile
+### 2.5 profile 分支把什么交给 runProfile
 
 启动分支先加载 `profile-boot.ts`，再传入启动所需的数据：
 
@@ -198,11 +228,13 @@ await runProfile({
 
 源码：`apps/cli/src/bin.ts` 的 `case 'profile'`。
 
-## 6. runProfile 内部：从配置到插件树
+</details>
+
+## 3. 配置怎样变成运行中的应用
 
 **它最接近 Spring IoC 容器的装配过程：读取组件定义，确定参数，创建实例，注入依赖，管理销毁。** 下面使用本机 `/Users/pangyan/.dsh/profiles/web/` 的真实配置说明。
 
-### 6.1 加载原则，以及 Java 类比
+### 3.1 加载原则，以及 Java 类比
 
 | DSH 中的概念 | 在这里负责什么 | 最接近的 Spring 概念 |
 | --- | --- | --- |
@@ -219,7 +251,7 @@ await runProfile({
 - **按服务依赖激活。** 同级插件可以并发加载；YAML 的行顺序不保证执行顺序。
 - **按父子归属清理。** 父插件管理自己挂载的孩子，关闭时沿这个关系回收资源。父子树与服务依赖图是两回事。
 
-### 6.2 源码中的加载流程
+### 3.2 源码中的加载流程
 
 ![配置如何变成运行中的插件](figures/dsh-plugin-load-flow.png)
 
@@ -269,7 +301,7 @@ this.fiber = this.ctx.registry.plugin(plugin, this.options.config, this.getOuter
 
 本例模块默认导出 `AgentDefaultModelConfig`，实例提供 `agentDefaultModel` 服务。其他组件通过这个服务读取默认模型。对应源码：[插件实现](../packages/core/agent-default-model/src/index.ts)、[创建 Fiber](../vendor/cordis/src/registry.ts#L316)、[执行插件代码](../vendor/cordis/src/fiber.ts#L248)。
 
-### 6.3 为什么会形成树
+### 3.3 为什么会形成树
 
 **因为插件可以继续挂载子插件，而父插件负责管理这些孩子。** 本机 `standard` 预设的压缩分组就是实际例子。
 
@@ -311,6 +343,24 @@ async* [Service.init]() {
 
 树不表示服务调用顺序。例如主配置中的 `web-startup` 和 `webserver` 是兄弟节点，`webserver` 仍要等待 `web-startup` 提供 `webStartup` 服务。可以类比 Spring：上下文有父子关系，Bean 之间另外有依赖关系。
 
+## 4. 设计自己的应用时，怎样划分启动职责
+
+下面按本章已看到的机制整理职责。迁移到其他 AI 应用时，应先确定这些职责的归属，再选择是否需要 profile、补丁或插件树。
+
+| 职责 | DSH 的实现依据 | 自己应用需要确定的设计 |
+| --- | --- | --- |
+| 接收启动意图 | CLI 把命令解析成 `invocation`，交给 `runProfile`。 | 哪些入口复用同一套能力，入口分别提供什么参数。 |
+| 确定有效配置 | 组合包和覆盖文件先合成为最终配置，再加载插件。 | 配置来源、覆盖顺序，以及冲突时怎样定位生效值。 |
+| 准备公共环境 | `boot` 先执行准备回调，再挂载配置中的插件。 | 环境、依赖解析、应用参数和退出服务何时可用，由谁提供。 |
+| 激活与释放组件 | 服务依赖决定激活条件，父子归属决定资源清理关系。 | 依赖图与资源所有权分别怎样表达，启动到一半失败时清理什么。 |
+| 接收并执行任务 | Agent 循环接纳输入、调用模型与调度工具。 | 应用就绪、输入已接收、执行中和业务完成分别用什么证据判断。 |
+
+启动清理也属于这份职责划分。[runProfile](../apps/cli/src/profile-boot.ts#L263) 在加载业务插件前保存应用上下文；多个退出来源复用同一次清理 Promise，先释放插件树，再撤销代理，即使前一项释放失败也继续处理后一项。这解决的是启动与退出期间已建立资源的回收。
+
+设计时还要明确：组件资源被释放，不代表已经提交到外部系统的业务操作被撤销。启动成功也不验证每一种模型请求或业务操作都会成功；这些需要执行阶段的检查与结果证据。
+
+多层配置和动态插件组合的收益来自真实的部署差异。只有一个固定入口、依赖基本不变的应用，可以使用更简单的配置与显式装配；先把配置来源、依赖和资源所有权说明白，再决定需要多少组合机制。
+
 ## 附：Electron 桌面端从哪里启动
 
 桌面开发入口是 `pnpm run dev:desktop`，已有构建产物时可以用 `pnpm run start:desktop`。它们通过桌面应用的开发脚本启动 Electron。
@@ -319,7 +369,7 @@ async* [Service.init]() {
 
 ## 对照源码时，从这些函数看起
 
-下面的路径均相对于仓库根目录。阅读基准为 2026-10-16 的本地工作区；用函数名定位，可避免新增注释后行号变化的影响。
+下面的路径均相对于仓库根目录。本机配置示例沿用 2026-10-16 的记录，启动装配与清理相关源码在 2026-10-29 复核；用函数名定位，可避免新增注释后行号变化的影响。
 
 | 想弄清的问题 | 文件与函数 |
 | --- | --- |
@@ -333,3 +383,7 @@ async* [Service.init]() {
 | 一项配置在哪里开始加载插件？ | `vendor/loader/src/config/entry.ts`：`Entry._init`。 |
 | standard 预设怎样加载自己的插件？ | `packages/preset/agent-preset/src/index.ts` 的 `AgentPreset`；`packages/preset/agent-preset-registry/src/index.ts` 的 `register`、`activate`；同目录 `mount.ts` 的 `mountPreset`。 |
 | Group 和 Include 怎样加载子插件？ | `vendor/loader/src/config/group.ts` 的 `Group`；`vendor/include/src/index.ts` 的 `Include`。 |
+
+## 下一章
+
+[源码精读2：一条消息如何驱动 Agent 执行](dsh-agent-loop-20261029.md)，从用户消息入队开始，继续看轮次、模型调用和工具执行。
